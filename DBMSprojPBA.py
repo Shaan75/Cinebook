@@ -1,181 +1,243 @@
 import mysql.connector
 from datetime import datetime
-import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tabulate import tabulate
+import time, os, random
 
-# ---------------- Connect to MySQL ----------------
+# Try importing colorama for colorful text
+try:
+    from colorama import Fore, Style, init
+    init(autoreset=True)
+except:
+    os.system('pip install colorama')
+    from colorama import Fore, Style, init
+    init(autoreset=True)
+
+# Connect to MySQL
 conn = mysql.connector.connect(
     host="localhost",
     user="root",
-    password="",  # Replace with your MySQL password
+    password="",  # Your MySQL password here
     database="movie_booking"
 )
 cursor = conn.cursor()
 
 # ---------------- Utility Functions ----------------
-def fetch_movies():
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def slow_print(text, delay=0.03):
+    for ch in text:
+        print(ch, end='', flush=True)
+        time.sleep(delay)
+    print()
+
+def loading(msg="Loading"):
+    for i in range(3):
+        print(f"{msg}{'.' * (i+1)}", end='\r')
+        time.sleep(0.5)
+    print(" " * 30, end='\r')
+
+def random_greeting():
+    greetings = [
+        "🎬 Welcome to CineBook – Where Every Seat Tells a Story!",
+        "🍿 Popcorn ready? Let’s find your next movie!",
+        "🎥 Lights, Camera, Action! Welcome to CineBook!",
+        "⭐ The best place to book your favorite movie tickets!"
+    ]
+    print(Fore.CYAN + random.choice(greetings) + Style.RESET_ALL)
+
+# ---------------- Database Functions ----------------
+def view_movies():
     cursor.execute("SELECT * FROM movies")
-    return cursor.fetchall()
+    movies = cursor.fetchall()
+    if not movies:
+        print(Fore.RED + "No movies found 🎞️")
+        return
+    print(Fore.YELLOW + "\n📽️  Now Showing:\n")
+    print(Fore.GREEN + tabulate(
+        [(m[0], m[1], m[2], m[3], f"₹{m[4]:.2f}") for m in movies],
+        headers=["ID", "Title", "Duration", "Language", "Price"],
+        tablefmt="fancy_grid"
+    ))
 
-def fetch_shows(movie_id):
+def view_shows(movie_id):
     cursor.execute("SELECT * FROM shows WHERE movie_id=%s", (movie_id,))
-    return cursor.fetchall()
+    shows = cursor.fetchall()
+    if not shows:
+        print(Fore.RED + "No shows available for this movie 😢")
+        return False
+    shows_display = []
+    for show in shows:
+        show_id, mid, show_time, seats_left, total_seats = show
+        shows_display.append([show_id, mid, show_time.strftime("%d-%b-%Y %H:%M"), seats_left, total_seats])
+    print(Fore.LIGHTMAGENTA_EX + "\n🎞️  Available Shows:\n")
+    print(Fore.GREEN + tabulate(shows_display, headers=["Show ID", "Movie ID", "Seats Left", "Total Seats"], tablefmt="fancy_grid"))
+    return True
 
-def fetch_user_bookings(user_id):
+def book_ticket(user_id, show_id, seats):
+    cursor.execute("SELECT seats_available, movie_id FROM shows WHERE show_id=%s", (show_id,))
+    result = cursor.fetchone()
+    if not result:
+        print(Fore.RED + "❌ Invalid show ID.")
+        return
+
+    available, movie_id = result
+    if seats <= 0:
+        print(Fore.RED + "❌ Invalid seat count.")
+        return
+    if seats > available:
+        print(Fore.YELLOW + f"⚠️ Only {available} seats left! Try again.")
+        return
+
+    # Get movie price
+    cursor.execute("SELECT price FROM movies WHERE movie_id=%s", (movie_id,))
+    price = cursor.fetchone()[0]
+    total_cost = seats * price
+
     cursor.execute("""
-        SELECT b.booking_id, m.title, s.show_time, b.seats_booked
+        INSERT INTO bookings (user_id, show_id, seats_booked, booking_time)
+        VALUES (%s,%s,%s,%s)
+    """, (user_id, show_id, seats, datetime.now()))
+    cursor.execute("UPDATE shows SET seats_available=seats_available-%s WHERE show_id=%s", (seats, show_id))
+    conn.commit()
+    print(Fore.GREEN + f"✅ Booking successful! {seats} seats reserved 🎉")
+    print(Fore.LIGHTYELLOW_EX + f"💰 Total cost: ₹{total_cost:.2f}")
+    cursor.execute("SELECT seats_available FROM shows WHERE show_id=%s", (show_id,))
+    remaining = cursor.fetchone()[0]
+    print(Fore.LIGHTCYAN_EX + f"Seats remaining for this show: {remaining}")
+
+def view_user_bookings(user_id):
+    cursor.execute("""
+        SELECT b.booking_id, m.title, s.show_time, b.seats_booked, m.price
         FROM bookings b
         JOIN shows s ON b.show_id = s.show_id
         JOIN movies m ON s.movie_id = m.movie_id
         WHERE b.user_id=%s
     """, (user_id,))
-    return cursor.fetchall()
+    bookings = cursor.fetchall()
+    if not bookings:
+        print(Fore.RED + "No bookings found 🪑")
+        return
+    bookings_display = []
+    for booking in bookings:
+        bid, title, show_time, seats, price = booking
+        total = seats * price
+        bookings_display.append([bid, title, show_time.strftime("%d-%b-%Y %H:%M"), seats, f"₹{total:.2f}"])
+    print(Fore.LIGHTYELLOW_EX + "\n🎫 Your Bookings:\n")
+    print(Fore.GREEN + tabulate(bookings_display, headers=["Booking ID", "Movie", "Show Time", "Seats", "Total Cost"], tablefmt="fancy_grid"))
 
-# ---------------- User Functions ----------------
 def register_user():
-    name = simpledialog.askstring("Register", "Enter your name:")
-    email = simpledialog.askstring("Register", "Enter your email:")
-    phone = simpledialog.askstring("Register", "Enter phone number:")
-    if not name or not email or not phone:
-        messagebox.showerror("Error", "All fields are required!")
-        return None
+    print(Fore.LIGHTBLUE_EX + "\n📝 Register New User:")
+    name = input("Enter your name: ")
+    email = input("Enter your email: ")
+    phone = input("Enter phone number: ")
     try:
-        cursor.execute("INSERT INTO users (name, email, phone) VALUES (%s,%s,%s)", (name,email,phone))
+        cursor.execute("INSERT INTO users (name, email, phone) VALUES (%s, %s, %s)", (name, email, phone))
         conn.commit()
         cursor.execute("SELECT user_id FROM users WHERE email=%s", (email,))
         user_id = cursor.fetchone()[0]
-        messagebox.showinfo("Success", f"Registration successful! Your User ID is: {user_id}")
+        print(Fore.GREEN + f"✅ Registration successful! Your User ID is: {user_id}")
         return user_id
     except mysql.connector.Error as e:
-        messagebox.showerror("Error", f"Error: {e}")
+        print(Fore.RED + f"❌ Error: {e}")
         return None
 
 def get_user_id():
     while True:
-        user_id = simpledialog.askinteger("User Login/Register", "Enter User ID (0 to register):")
-        if user_id == 0:
-            return register_user()
-        cursor.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
-        if cursor.fetchone():
-            return user_id
+        try:
+            user_id = int(input("Enter your User ID (or 0 to register new user): "))
+            if user_id == 0:
+                return register_user()
+            cursor.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
+            if cursor.fetchone():
+                return user_id
+            else:
+                print(Fore.RED + "❌ User ID not found. Try again or enter 0 to register.")
+        except ValueError:
+            print(Fore.RED + "❌ Enter a valid number!")
+
+def view_movie_income():
+    cursor.execute("""
+        SELECT m.title, m.price, 
+               IFNULL(SUM(b.seats_booked),0) AS total_seats_sold,
+               IFNULL(SUM(b.seats_booked)*m.price,0) AS total_income
+        FROM movies m
+        LEFT JOIN shows s ON m.movie_id = s.movie_id
+        LEFT JOIN bookings b ON s.show_id = b.show_id
+        GROUP BY m.movie_id
+    """)
+    results = cursor.fetchall()
+    print(Fore.LIGHTGREEN_EX + "\n💰 Movie-wise Income Report:\n")
+    print(Fore.GREEN + tabulate(results, headers=["Movie", "Price", "Seats Sold", "Total Income"], tablefmt="fancy_grid"))
+
+# ---------------- Main Menu ----------------
+def main():
+    clear_screen()
+    random_greeting()
+    time.sleep(1)
+
+    while True:
+        print(Fore.CYAN + "\n🎬 --- CINEBOOK MAIN MENU --- 🎬")
+        print(Fore.LIGHTWHITE_EX + """
+1️⃣  View Movies
+2️⃣  View Shows
+3️⃣  Book Ticket
+4️⃣  View My Bookings
+5️⃣  Register New User
+6️⃣  Movie Income Report
+7️⃣  Exit
+""")
+        choice = input(Fore.LIGHTYELLOW_EX + "Enter choice: " + Style.RESET_ALL)
+
+        if choice == '1':
+            clear_screen()
+            view_movies()
+        elif choice == '2':
+            view_movies()
+            try:
+                movie_id = int(input("Enter Movie ID to view shows: "))
+                clear_screen()
+                view_shows(movie_id)
+            except ValueError:
+                print(Fore.RED + "❌ Invalid Movie ID")
+        elif choice == '3':
+            user_id = get_user_id()
+            view_movies()
+            try:
+                movie_id = int(input("Enter Movie ID: "))
+                if view_shows(movie_id):
+                    show_id = int(input("Enter Show ID: "))
+                    seats = int(input("Enter Number of Seats: "))
+                    confirm = input(Fore.LIGHTYELLOW_EX + f"Confirm booking {seats} seats? (y/n): ")
+                    if confirm.lower() == 'y':
+                        loading("Booking your seats")
+                        book_ticket(user_id, show_id, seats)
+                    else:
+                        print(Fore.RED + "Booking cancelled.")
+            except ValueError:
+                print(Fore.RED + "❌ Invalid input")
+        elif choice == '4':
+            user_id = get_user_id()
+            clear_screen()
+            view_user_bookings(user_id)
+        elif choice == '5':
+            clear_screen()
+            register_user()
+        elif choice == '6':
+            clear_screen()
+            view_movie_income()
+        elif choice == '7':
+            slow_print(Fore.LIGHTMAGENTA_EX + "\nThanks for using CineBook! 🎥 Have a great day! 🍿")
+            break
         else:
-            messagebox.showerror("Error", "User ID not found. Try again or 0 to register.")
+            print(Fore.RED + "Invalid choice ❌ Try again!")
 
-# ---------------- GUI Windows ----------------
-def view_movies_window():
-    movies = fetch_movies()
-    if not movies:
-        messagebox.showinfo("Movies", "No movies available.")
-        return
+        input(Fore.LIGHTBLACK_EX + "\nPress Enter to return to menu...")
+        clear_screen()
 
-    win = tk.Toplevel(root)
-    win.title("Movies List")
-    win.geometry("500x300")
+    cursor.close()
+    conn.close()
 
-    tree = ttk.Treeview(win, columns=("ID","Title","Duration","Language"), show='headings')
-    tree.heading("ID", text="ID")
-    tree.heading("Title", text="Title")
-    tree.heading("Duration", text="Duration")
-    tree.heading("Language", text="Language")
-
-    for movie in movies:
-        tree.insert("", tk.END, values=movie)
-    tree.pack(expand=True, fill=tk.BOTH)
-
-def view_shows_window():
-    movies = fetch_movies()
-    if not movies:
-        messagebox.showinfo("Shows", "No movies available.")
-        return
-
-    movie_selection = simpledialog.askinteger("Select Movie", "Enter Movie ID to view shows:")
-    shows = fetch_shows(movie_selection)
-    if not shows:
-        messagebox.showinfo("Shows", "No shows for this movie.")
-        return
-
-    win = tk.Toplevel(root)
-    win.title("Shows List")
-    win.geometry("600x300")
-
-    tree = ttk.Treeview(win, columns=("ShowID","MovieID","Time","Seats"), show='headings')
-    tree.heading("ShowID", text="Show ID")
-    tree.heading("MovieID", text="Movie ID")
-    tree.heading("Time", text="Show Time")
-    tree.heading("Seats", text="Seats Left")
-
-    for show in shows:
-        tree.insert("", tk.END, values=(show[0], show[1], show[2].strftime("%d-%b-%Y %H:%M"), show[3]))
-    tree.pack(expand=True, fill=tk.BOTH)
-
-def book_ticket_window():
-    user_id = get_user_id()
-    movies = fetch_movies()
-    if not movies:
-        messagebox.showinfo("Booking", "No movies available.")
-        return
-
-    movie_id = simpledialog.askinteger("Select Movie", "Enter Movie ID:")
-    shows = fetch_shows(movie_id)
-    if not shows:
-        messagebox.showinfo("Booking", "No shows for this movie.")
-        return
-
-    show_id = simpledialog.askinteger("Select Show", "Enter Show ID:")
-    cursor.execute("SELECT seats_available FROM shows WHERE show_id=%s", (show_id,))
-    available = cursor.fetchone()[0]
-
-    seats = simpledialog.askinteger("Seats", f"Enter number of seats (Available: {available}):")
-    if seats <= 0 or seats > available:
-        messagebox.showerror("Error", "Invalid number of seats.")
-        return
-
-    confirm = messagebox.askyesno("Confirm", f"Confirm booking {seats} seats for Show ID {show_id}?")
-    if confirm:
-        cursor.execute("""
-            INSERT INTO bookings (user_id, show_id, seats_booked, booking_time)
-            VALUES (%s,%s,%s,%s)
-        """, (user_id, show_id, seats, datetime.now()))
-        cursor.execute("UPDATE shows SET seats_available=seats_available-%s WHERE show_id=%s", (seats, show_id))
-        conn.commit()
-        messagebox.showinfo("Success", f"Booking confirmed! Seats remaining: {available - seats}")
-
-def view_bookings_window():
-    user_id = get_user_id()
-    bookings = fetch_user_bookings(user_id)
-    if not bookings:
-        messagebox.showinfo("Bookings", "No bookings found.")
-        return
-
-    win = tk.Toplevel(root)
-    win.title("My Bookings")
-    win.geometry("600x300")
-
-    tree = ttk.Treeview(win, columns=("BookingID","Movie","Time","Seats"), show='headings')
-    tree.heading("BookingID", text="Booking ID")
-    tree.heading("Movie", text="Movie")
-    tree.heading("Time", text="Show Time")
-    tree.heading("Seats", text="Seats Booked")
-
-    for b in bookings:
-        tree.insert("", tk.END, values=(b[0], b[1], b[2].strftime("%d-%b-%Y %H:%M"), b[3]))
-    tree.pack(expand=True, fill=tk.BOTH)
-
-# ---------------- Main GUI ----------------
-root = tk.Tk()
-root.title("CineBook GUI")
-root.geometry("600x400")
-
-tk.Label(root, text="🎬 Welcome to CineBook!", font=("Helvetica", 20)).pack(pady=20)
-tk.Button(root, text="View Movies", width=25, command=view_movies_window).pack(pady=5)
-tk.Button(root, text="View Shows", width=25, command=view_shows_window).pack(pady=5)
-tk.Button(root, text="Book Ticket", width=25, command=book_ticket_window).pack(pady=5)
-tk.Button(root, text="View My Bookings", width=25, command=view_bookings_window).pack(pady=5)
-tk.Button(root, text="Register New User", width=25, command=register_user).pack(pady=5)
-tk.Button(root, text="Exit", width=25, command=root.destroy).pack(pady=20)
-
-root.mainloop()
-
-# Close DB connection when done
-cursor.close()
-conn.close()
+# ---------------- Run Program ----------------
+if __name__ == "__main__":
+    main()
