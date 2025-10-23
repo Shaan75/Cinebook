@@ -17,3 +17,7 @@
 ## Setup
 1. Run your WAMP server and create the `movie_booking` database using the provided SQL script.
 2. Install Python dependencies:
+3. Run the Python GUI:
+
+## Database
+Connects to WAMP MySQL server (default host: `localhost`, user: `root`, password: empty).
